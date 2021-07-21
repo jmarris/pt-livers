@@ -1,0 +1,391 @@
+---
+title: "Analysis CogSci2021 #1054"
+output: html_document
+---
+This markdown contains the analysis associated with the CogSci 2021 submission #1054 "How effective is perceptual learning: Evaluating two perceptual training methods on a difficult visual categorisation task". 
+
+## Setup
+#### Load packages
+```{r setup, echo=TRUE, message=FALSE}
+library(afex)
+library(ggpubr)
+library(here)
+library(rstatix)
+library(tidyverse)
+```
+
+#### Load data
+`trainData` contains data from the perceptual training experiment that was run on Prolific with medically naive participants in 2020.
+```{r setup2, echo=TRUE, message=FALSE}
+expertData <- read.csv(file= here("data", "expertData.csv"), stringsAsFactors = FALSE) 
+trainData <- read.csv(file = here("data", "trainData.csv"), stringsAsFactors = FALSE) %>%
+  mutate(image = str_sub(stimulus_L, start = 5, end = -8))
+
+# all test images used in experiment
+testImgs <- trainData %>% filter(trial_type %in% c("pre-test", "post-test")) %>% 
+  select(image, trial_type) %>% unique() %>% 
+  arrange(trial_type, image)
+```
+
+## Demographic information for medically naive participants  
+#### Age, gender, and country
+```{r demographics, message=FALSE}
+demoAgeGender <- trainData %>%
+  select(participantID, age, gender) %>% 
+  filter(!is.na(age)) %>% summarise(
+  "N" = n(),
+  "Mean Age" = round(mean(age),2),
+  "SD Age" = round(sd(age), 2),
+  "Min Age" = min(age),
+  "Max Age" = max(age),
+  "Male" = sum(gender == "male"),
+  "Female" = sum(gender == "female"),
+  "Other gender" = sum(gender == "other"))
+
+demoCountry <- trainData %>%
+  select(participantID, age, country) %>% 
+  filter(!is.na(age)) %>% count(country)
+```
+
+```{r}
+
+```
+
+## Pre-test and post-test performance for medically naive participants
+```{r prePostSummary, message=FALSE}
+# individual summary statistics for pre/post test for each training condition
+naiveSummary <- trainData %>% group_by(expCondition, trial_type) %>% 
+  filter(trial_type %in% c("pre-test", "post-test")) %>% 
+  summarise(meanDiff = mean(diff, na.rm=TRUE), 
+            sdErr = sd(diff)/sqrt(n())) %>% 
+  rename("Condition" = "expCondition", "Test" = "trial_type") %>% 
+  mutate(Test = recode_factor(Test, "pre-test" = "Pre-test", "post-test" = "Post-test"),
+         Condition = recode_factor(Condition, "single-case" = "Single-case", "comparison" = "Comparison")) %>% 
+  relocate(Test, .after = sdErr)
+
+# group summary statistics for pre/post test for each training condition
+naivePerformance <- trainData %>% group_by(expCondition, participantID, trial_type) %>% 
+  filter(trial_type %in% c("pre-test", "post-test")) %>% 
+  summarise(meanDiff = mean(diff, na.rm=TRUE), 
+            sdErr = sd(diff)/sqrt(n())) %>% 
+  rename("Condition" = "expCondition", "Test" = "trial_type", "Participant" = "participantID") %>% 
+  mutate(Test = recode_factor(Test, "pre-test" = "Pre-test", "post-test" = "Post-test"),
+         Condition = recode_factor(Condition, "single-case" = "Single-case", "comparison" = "Comparison")) %>% 
+  ungroup()
+```
+
+## Measure of expert performance  
+Here we estimate a measure of expert performance for the images used in the pre-test and post-test phase in the perceptual training experiment. To avoid "double-dipping the data" we analyse each expert's performance in turn. 
+```{r expertError, message=FALSE}
+# expert ratings and the consensus grade for each image
+consensusGrade <- expertData %>% group_by(image) %>% filter(image %in% testImgs$image) %>% 
+  pivot_wider(names_from = participant, values_from = graded) %>%
+  mutate(consensus = (round(mean(c(expert1, expert2, expert3, expert4, expert5)), 0))) %>% relocate(any_of(c("image", "expert1", "expert2", "expert3", "expert4", "expert5", "consensus"))) %>% arrange(image) %>% ungroup() 
+consensusGrade <- left_join(consensusGrade, testImgs)
+
+# experts' error for each image, calculated relative to the other four experts
+expertError <- consensusGrade %>% 
+  mutate(
+    consensus1 = (floor(0.5+((expert2+expert3+expert4+expert5)/4))), # consensus excluding expert1
+    expert1err = abs(consensus1-expert1), # expert1's mean error
+    consensus2 = (floor(0.5+((expert1+expert3+expert4+expert5)/4))), # consensus excluding expert2
+    expert2err = abs(consensus2-expert2), # expert2's mean error
+    consensus3 = (floor(0.5+((expert1+expert2+expert4+expert5)/4))), # consensus excluding expert3
+    expert3err = abs(consensus3-expert3), # expert3's mean error 
+    consensus4 = (floor(0.5+((expert1+expert2+expert3+expert5)/4))), # consensus excluding expert4
+    expert4err = abs(consensus4-expert4), # expert4's mean error 
+    consensus5 = (floor(0.5+((expert1+expert2+expert3+expert4)/4))), # consensus excluding expert5
+    expert5err = abs(consensus5-expert5)) # expert5's mean error 
+
+# the mean error for each expert (relative to the other four experts) for the images used in the pre-test and post-test of our experiment
+expertPerformance <- expertError %>% 
+  rename("Test" = "trial_type") %>% 
+  select(expert1err, expert2err, expert3err, expert4err, expert5err, image, Test) %>% 
+  pivot_longer(cols = c(1:5), names_to = c("Expert"), values_to = "MeanError") %>% 
+  group_by(Test, Expert) %>% 
+  summarise(meanDiff = round(mean(MeanError),2), # mean error
+            sdErr = sd(MeanError)/sqrt(n())) %>% 
+  arrange(desc(Test)) %>% rename(Participant = "Expert") %>% 
+  mutate(Test = recode_factor(Test, "pre-test" = "Pre-test", "post-test" = "Post-test")) %>% 
+  mutate(Condition = "Experts") %>% ungroup()
+
+# overall measure of mean error for all experts 
+expertSummaryPerformance <- expertError %>% 
+  rename("Test" = "trial_type") %>% 
+  select(expert1err, expert2err, expert3err, expert4err, expert5err, image, Test) %>% 
+  pivot_longer(cols = c(1:5), names_to = c("Expert"), values_to = "MeanError") %>% 
+  group_by(Test) %>% 
+  summarise(meanDiff = round(mean(MeanError),2),
+            sdErr = sd(MeanError)/sqrt(n())) %>% 
+  arrange(desc(Test)) %>% mutate(Condition = "Experts") %>% 
+  mutate(Test = recode_factor(Test, "pre-test" = "Pre-test", "post-test" = "Post-test")) %>% ungroup()
+```
+
+## Plots
+#### Figure 3 from manuscript: Percentage of responses for each possible distance from the consensus answer in the pre-test and post-test for each training condition.
+```{r plot1, message=FALSE}
+trainData %>% group_by(expCondition, trial_type) %>% 
+  filter(trial_type %in% c("pre-test","post-test")) %>% 
+  summarise("0" = round(sum(diff==0)/n()*100, digits=2),
+            "1" = round(sum(diff==1)/n()*100, digits=2),
+            "2" = round(sum(diff==2)/n()*100, digits =2),
+            "3" = round(sum(diff==3)/n()*100,digits=2), 
+            "4" = round(sum(diff==4)/n()*100, digits=2),
+            "5" = round(sum(diff==5)/n()*100,digits=2), 
+            "6" = round(sum(diff==6)/n()*100, digits=2)) %>% 
+  pivot_longer(cols=c(3:9), names_to = 'difference', values_to="Percentage") %>%
+  rename("Test" = "trial_type", "Condition" = "expCondition") %>% 
+  mutate(Test = recode_factor(Test, "pre-test" = "Pre-test", "post-test" = "Post-test"),
+         Condition = recode_factor(Condition, "single-case" = "Single-case", "comparison" = "Comparison")) %>% 
+  ggplot(aes(x=difference, y=Percentage, fill=Test))+
+  geom_bar(stat='identity', position="dodge", colour="black", size= 0.2)+
+  scale_fill_manual(values = c("Pre-test" = "grey80", "Post-test" = "grey40"))+
+  facet_wrap(~Condition)+
+  labs(x="Distance from consensus answer",
+       y="Percentage of responses")+
+  theme_bw(base_size = 16)+
+  theme(legend.position=c(0.88,0.8), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+#### Figure 4 from manuscript: Performance by training condition on the pre-test and post-test images for medically naıve participants, with a measure of expert performance for comparison
+```{r plot2, message=FALSE}
+# merge expert and novice invididual data
+indivData <- bind_rows(expertPerformance, naivePerformance) %>% 
+  mutate(Test = as.factor(Test), 
+         Test = factor(Test, levels = c("Pre-test", "Post-test")),
+         Condition = as.factor(Condition),
+         Condition = factor(Condition, levels = c("Experts", "Comparison", "Single-case")))
+
+# merge summary stats for experts and novice participants 
+summaryPerformance <- bind_rows(expertSummaryPerformance, naiveSummary) %>% 
+  mutate(Test = as.factor(Test), 
+         Test = factor(Test, levels = c("Pre-test", "Post-test")),
+         Condition = as.factor(Condition),
+         Condition = factor(Condition, levels = c("Experts", "Comparison", "Single-case"))) 
+
+summaryPerformance %>%
+  ggplot(mapping=aes(x = Test, y = meanDiff, fill = Condition))+
+  geom_col(position = position_dodge(), alpha =.4, colour = "black", size = .2)+
+  scale_fill_manual(values=c("green4", "#F8766D", "#00BFCA"))+
+  geom_point(data = indivData, 
+             mapping=aes(x = Test, y = meanDiff, colour = Condition), 
+             size=.8, position = position_jitterdodge(dodge.width = .9), alpha = .8)+
+  geom_errorbar(mapping=aes(
+    ymin = meanDiff - sdErr, ymax = meanDiff + sdErr), 
+    position = position_dodge(.9), width=.2, size = .5)+
+  scale_colour_manual(values = c("green4", "#F8766D", "#00BFCA"))+
+  scale_x_discrete(limits = c("Pre-test", "Post-test"))+
+  labs(
+    title = "Mean error on the pre-test and post-test images",
+    x ="Test Images", y ="Mean error", fill = "", colour = "")+
+  theme_classic(base_size = 14)+
+  theme(legend.position="bottom")+
+  scale_y_continuous(breaks=c(0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5),
+                     limits=c(0, 3))
+```
+
+## Main analysis
+Mixed ANOVA Using the afex package, with type III SS for unbalanced design
+```{r ANOVA, message=FALSE}
+# aov_car(DV ~ Btw_Cond*Within_Cond + Error(subject/Within_Cond), data=df)
+anovaModel <- aov_car(meanDiff ~ Condition*Test + Error(Participant/Test), data=naivePerformance)
+anovaModel
+```
+
+#### Follow up t-tests
+```{r followup, message=FALSE}
+# Comparing performance of the training conditions on the pre-test, and the post-test
+preData <- naivePerformance %>% filter(Test == "Pre-test")
+postData <- naivePerformance %>% filter(Test == "Post-test")
+
+pre <- t.test(formula = meanDiff ~Condition, data = preData)
+post <- t.test(formula = meanDiff ~Condition, data = postData)
+
+pre
+post
+p.adjust(c(pre$p.value, post$p.value), "bonferroni")
+```
+
+## Training data: COMPARISON
+#### Figure 5 in the manuscript: The mean difficulty level of the comparisons (higher = more difficult) over the course of each training session.
+```{r compTraining, message = FALSE}
+compTrain <- trainData %>% group_by(session, case_number) %>% 
+  filter(trial_type == "compare") %>% 
+  summarise(mCorrect = mean(correct), mnlvl=mean(level), mRT = mean(rt)) %>%
+  arrange(case_number) %>% 
+  mutate(session=as.character(session)) %>% 
+  mutate(session = recode_factor(session, "1" = "Session 1", "2" = "Session 2", "3" = "Session 3", "4" = "Session 4"))
+
+compTrain %>% ggplot(mapping = aes(x=case_number, y=mnlvl))+
+  geom_point(colour="#F8766D", size=.6) + 
+  facet_wrap(~session)+
+  labs(
+    x="Training trial number", y= "Comparison difficulty level")+
+  theme_bw(base_size = 14)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+# comparing the final training trial in Session 1 to Session 4
+compTrain1.4.finalTrial <- trainData %>% group_by(participantID, session, trial_type) %>% 
+  filter(trial_type %in% c("compare"), session %in% c(1, 4), trial_num  == 100) %>%
+  summarise(mnlvl=mean(level), 
+            mnCorrect = mean(correct),
+            meanRT = mean(rt), 
+            medRT = median(rt),
+            n=n()) %>% ungroup()
+
+t.test(formula = mnlvl ~ session, data = compTrain1.4.finalTrial, paired=TRUE)
+```
+
+## Training data: SINGLE-CASE
+#### Figure 6 in the manuscript:  The mean error over the course of each training session.
+```{r singleTrain, message=FALSE}
+singlecaseTrain <- trainData %>% group_by(session, case_number) %>% 
+  filter(trial_type == "grade") %>% 
+  summarise(mCorrect = mean(correct), mndiff=mean(diff), mRT = mean(rt)) %>%
+  arrange(case_number) %>% mutate(session=as.character(session)) %>% 
+  mutate(session = recode_factor(session, "1" = "Session 1", "2" = "Session 2", "3" = "Session 3", "4" = "Session 4")) %>% ungroup()
+
+singlecaseTrain %>% ggplot(mapping = aes(x=case_number, y=mndiff))+
+  geom_point(colour="#00BFCA", size=.6) + 
+  ylim(0,2)+
+  facet_wrap(~session)+
+  labs(x="Training trial number",
+       y= "Mean error")+
+  theme_bw(base_size = 16)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+# comparing the final training trial in Session 1 to Session 4
+singleTrain1.4.finalTrial <- trainData %>% group_by(participantID, session, trial_type) %>% 
+  filter(trial_type %in% c("grade"), session %in% c(1, 4), trial_num == 100) %>% 
+  summarise(meanDiff = mean(diff, na.rm=TRUE), 
+            sdErr = sd(diff)/sqrt(n()),
+            meanRT = mean(rt), 
+            medRT = median(rt),
+            n=n()) %>% ungroup()
+
+t.test(formula = meanDiff ~ session, data = singleTrain1.4.finalTrial, paired=TRUE)
+```
+
+In the following linear models, the outcome variable is the mean error (distance from the correct answer) and the predictor is the number of training trials. 
+```{r regressionModels, message=FALSE}
+# session 1
+singleTrain1 <- singlecaseTrain %>% filter(session == "Session 1") 
+model1 <- lm(mndiff ~ case_number, data = singleTrain1) 
+summary(model1) 
+
+# session 2
+singleTrain2 <- singlecaseTrain %>% filter(session == "Session 2")
+model2 <- lm(mndiff ~ case_number, data = singleTrain2) 
+summary(model2)
+
+# session 3
+singleTrain3 <- singlecaseTrain %>% filter(session == "Session 3")
+model3 <- lm(mndiff ~ case_number, data = singleTrain3) 
+summary(model3) 
+
+# session 4
+singleTrain4 <- singlecaseTrain %>% filter(session == "Session 4")
+model4 <- lm(mndiff ~ case_number, data = singleTrain4) 
+summary(model4) 
+```
+
+
+## Miscellaneous 
+#### Completion time
+```{r completionTime, message=FALSE}
+# mean and median completion time for a session for each training condition 
+trainData %>% group_by(expCondition) %>% 
+  summarise(
+    meanTime = round(mean(time_elapsed)/60000),
+    medianTime = round(median(time_elapsed/60000)))
+
+# mean and median time for each training session and condition
+trainData %>% group_by(expCondition, session) %>% 
+  summarise(medianTime = round(median(time_elapsed/60000)),
+            meanTime = round(mean(time_elapsed)/60000))
+```
+
+#### Missing data
+Check for any missing data for participants. Complete data for session 1 and 4 is 150 trials and for sessions 2 and 3, 100 trials.
+```{r missingData, message = FALSE}
+trainData %>% group_by(expCondition, participantID, session) %>% 
+  select(participantID, expCondition, trial_num, session) %>%
+  filter(trial_num != "NULL") %>% summarise(numTrials = n()) %>% 
+  pivot_wider(names_from = session, values_from = numTrials) %>% 
+  rename("Condition" = "expCondition","session1" = "1", "session2" = "2", "session3" = "3", "session4" = "4") %>% filter(!session1 == 150 | !session2 ==100 | !session3 == 100 | !session4 == 150)
+```
+Seven participants were missing a small amount of data (28 trials missing in total), most likely due to a technical issue with the data not saving to the server for those particular trials. As only a small amount of data was missing, we retained these participants in our analyses. 
+
+#### Attention checks
+Attention check trials consisted of a stimulus overlaid with the words "ATTENTION CHECK" and with a prompt asking the participant to respond with a particular grade for that image. There were 3 attention checks in session 1 and session 4, and two in session 2 and session 3. 
+```{r attentionCheck, message = FALSE}
+trainData %>% group_by(participantID) %>% filter(trial_type == "attention_check") %>% summarise(nChecks = n(), PercentCorrect = sum(correct)*100/n()) %>% filter(PercentCorrect != 100)
+```
+The majority of participants responded correctly to all of the ten attention check trials. 
+
+#### ANOVA assumption checking
+```{r outliers, message=FALSE}
+naivePerformance %>%
+  group_by(Test, Condition) %>%
+  identify_outliers(meanDiff)
+
+outliers <- naivePerformance %>%
+  group_by(Test, Condition) %>%
+  identify_outliers(meanDiff) %>% select(Participant)
+```
+There are no extreme outliers. We ran the main analysis again, excluding outliers and found the same pattern of results.
+
+```{r normality, message=FALSE}
+ggqqplot(naivePerformance, "meanDiff", ggtheme = theme_bw()) +
+  facet_grid(Test ~ Condition)
+
+naivePerformance %>%
+  group_by(Test, Condition) %>%
+  shapiro_test(meanDiff)
+
+trainData %>% group_by(expCondition, participantID, trial_type) %>% 
+  filter(trial_type %in% c("pre-test", "post-test")) %>% 
+  summarise(meanDiff = mean(diff, na.rm=TRUE)) %>% pivot_wider(names_from = trial_type, values_from = meanDiff) %>% mutate(diff = `post-test` - `pre-test`) %>% group_by(expCondition) %>% shapiro_test(diff)
+
+diffQQ <- trainData %>% group_by(expCondition, participantID, trial_type) %>% 
+  filter(trial_type %in% c("pre-test", "post-test")) %>% 
+  summarise(meanDiff = mean(diff, na.rm=TRUE)) %>% pivot_wider(names_from = trial_type, values_from = meanDiff) %>% mutate(diff = `post-test`-`pre-test`) %>% group_by(expCondition) 
+
+ggqqplot(diffQQ, "diff", ggtheme = theme_bw()) +
+  facet_grid(~expCondition)
+```
+
+```{r homogeneity, message=FALSE}
+# Levene's test
+naivePerformance %>%
+  group_by(Test) %>%
+  levene_test(meanDiff ~ Condition)
+
+box_m(naivePerformance[, "meanDiff", drop = FALSE], naivePerformance$Condition)
+```
+There was homogeneity of covariances, as assessed by Box’s test of equality of covariance matrices (p > .001).
+
+#### Repeated analysis with outliers removed
+```{r ANOVAoutliers, message=FALSE}
+outliersRemoved <- naivePerformance %>% filter(!Participant %in% outliers$Participant)
+
+mixedAovOutliers <- aov_car(meanDiff ~ Condition*Test + Error(Participant/Test), data=outliersRemoved)
+mixedAovOutliers
+
+# shapiro-wilks
+outliersRemoved %>%
+  group_by(Test, Condition) %>%
+  shapiro_test(meanDiff)
+
+# qqplots
+ggqqplot(outliersRemoved, "meanDiff", ggtheme = theme_bw()) +
+  facet_grid(Test ~ Condition)
+
+# Levene's test
+outliersRemoved %>%
+  group_by(Test) %>%
+  levene_test(meanDiff ~ Condition)
+
+box_m(outliersRemoved[, "meanDiff", drop = FALSE], outliersRemoved$Condition)
+```
+Same pattern found as main analysis. 
