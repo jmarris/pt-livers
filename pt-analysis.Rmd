@@ -47,10 +47,6 @@ demoCountry <- trainData %>%
   filter(!is.na(age)) %>% count(country)
 ```
 
-```{r}
-
-```
-
 ## Pre-test and post-test performance for medically naive participants
 ```{r prePostSummary, message=FALSE}
 # individual summary statistics for pre/post test for each training condition
